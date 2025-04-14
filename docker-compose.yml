@@ -1,0 +1,181 @@
+version: '3.8'
+
+services:
+  # PostgreSQL for Airflow metastore
+  postgres-airflow:
+    image: postgres:13
+    container_name: postgres_airflow
+    environment:
+      POSTGRES_USER: ${POSTGRES_AIRFLOW_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_AIRFLOW_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_AIRFLOW_DB}
+    volumes:
+      - postgres_airflow_data:/var/lib/postgresql/data
+    networks:
+      - airflow-net
+    ports:
+      - "5432:5432"
+    restart: always
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_AIRFLOW_USER}", "-d", "${POSTGRES_AIRFLOW_DB}", "-h", "${POSTGRES_AIRFLOW_HOST}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for raw XKCD data
+  postgres-raw:
+    image: postgres:13
+    container_name: postgres_raw
+    environment:
+      POSTGRES_USER: ${POSTGRES_RAW_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_RAW_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_RAW_DB}
+    volumes:
+      - postgres_raw_data:/var/lib/postgresql/data
+    networks:
+      - airflow-net
+    ports:
+      - "5433:5432"
+    restart: always
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_RAW_USER}", "-d", "${POSTGRES_RAW_DB}", "-h", "${POSTGRES_RAW_HOST}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for XKCD DWH
+  postgres-dwh:
+    image: postgres:13
+    container_name: postgres_dwh
+    environment:
+      POSTGRES_USER: ${POSTGRES_DWH_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_DWH_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DWH_DB}
+    volumes:
+      - postgres_dwh_data:/var/lib/postgresql/data
+    networks:
+      - airflow-net
+    ports:
+      - "5434:5432"
+    restart: always
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_DWH_USER}", "-d", "${POSTGRES_DWH_DB}", "-h", "${POSTGRES_DWH_HOST}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  airflow-db-upgrade:
+    image: apache/airflow:2.6.1
+    container_name: airflow_db_upgrade
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_AIRFLOW_USER}:${POSTGRES_AIRFLOW_PASSWORD}@postgres-airflow/${POSTGRES_AIRFLOW_DB}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      PYTHONPATH: /opt/airflow:/opt/scripts
+    volumes:
+      - ./airflow:/opt/airflow
+      - ./scripts:/opt/scripts
+    user: root
+#    user: "50000:50000"
+    command: airflow db upgrade
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    networks:
+      - airflow-net
+    restart: on-failure
+
+  airflow-create-user:
+    image: apache/airflow:2.6.1
+    container_name: airflow_create_user
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_AIRFLOW_USER}:${POSTGRES_AIRFLOW_PASSWORD}@postgres-airflow/${POSTGRES_AIRFLOW_DB}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      PYTHONPATH: /opt/airflow:/opt/scripts
+    volumes:
+      - ./airflow:/opt/airflow
+      - ./scripts:/opt/scripts
+    user: root
+    command: >
+      bash -c "airflow users create --username ${AIRFLOW_ADMIN_USER} --password ${AIRFLOW_ADMIN_PASSWORD} --firstname Admin --lastname Admin --role Admin --email ${AIRFLOW_ADMIN_EMAIL}"
+    depends_on:
+      airflow-db-upgrade:
+        condition: service_completed_successfully
+    networks:
+      - airflow-net
+    restart: on-failure
+
+  airflow-scheduler:
+    image: apache/airflow:2.6.1
+    container_name: airflow_scheduler
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_AIRFLOW_USER}:${POSTGRES_AIRFLOW_PASSWORD}@postgres-airflow/${POSTGRES_AIRFLOW_DB}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      PYTHONPATH: /opt/airflow:/opt/scripts
+    volumes:
+      - ./airflow:/opt/airflow
+      - ./scripts:/opt/scripts
+    user: root
+    command: airflow scheduler
+    depends_on:
+      airflow-create-user:
+        condition: service_completed_successfully
+      postgres-airflow:
+        condition: service_healthy
+    networks:
+      - airflow-net
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname)"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  airflow-webserver:
+    image: apache/airflow:2.6.1
+    container_name: airflow_webserver
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_AIRFLOW_USER}:${POSTGRES_AIRFLOW_PASSWORD}@postgres-airflow/${POSTGRES_AIRFLOW_DB}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      PYTHONPATH: /opt/airflow:/opt/scripts
+    volumes:
+      - ./airflow:/opt/airflow
+      - ./scripts:/opt/scripts
+    user: root
+    ports:
+      - "8080:8080"
+    command: airflow webserver
+    depends_on:
+      airflow-create-user:
+        condition: service_completed_successfully
+      postgres-airflow:
+        condition: service_healthy
+    networks:
+      - airflow-net
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+networks:
+  airflow-net:
+    driver: bridge
+
+volumes:
+  postgres_airflow_data:
+    driver: local
+  postgres_dwh_data:
+    driver: local
+  postgres_raw_data:
+    driver: local

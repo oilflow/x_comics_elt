@@ -1,0 +1,11 @@
+.idea/
+scripts/__pycache__/
+scripts/*.pyc
+*.pyc
+venv/
+logs/
+*.log
+airflow/airflow.cfg
+airflow/webserver_config.py
+airflow/dags/__pycache__/
+.DS_Store
